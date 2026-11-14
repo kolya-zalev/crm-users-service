@@ -3,7 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
-} from "@nestjs/common";
+} from '@nestjs/common';
 import {
   getPermissionsForRole,
   getRolesWithPermission,
@@ -14,71 +14,86 @@ import {
   type UpsertUserPayload,
   type UpdateMePayload,
   type UserRef,
-} from "@crm/shared";
-import { PrismaService } from "../prisma/prisma.service";
-import { nextEmailChangeAt } from "./users-email.constants";
+} from '@crm/shared';
+import { nextEmailChangeAt } from './users-email.constants';
+import { InjectRepository } from '@nestjs/typeorm';
+import { User as UserEntity } from './user.entity';
+import { Repository, In } from 'typeorm';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    @InjectRepository(UserEntity) private readonly repo: Repository<UserEntity>,
+  ) {}
 
   listAssignable(): Promise<AssignableUser[]> {
-    return this.prisma.user.findMany({
+    return this.repo.find({
       where: {
-        role: { in: getRolesWithPermission(permissions.leadBeAssigned) },
+        role: In(getRolesWithPermission(permissions.leadBeAssigned)),
       },
       select: { id: true, name: true, role: true },
-      orderBy: { name: "asc" },
+      order: { name: 'ASC' },
     });
   }
-  upsert({ id, email, name, role }: UpsertUserPayload): Promise<UserRef> {
-    return this.prisma.user.upsert({
-      where: { id },
-      create: { id, email, name, role },
-      update: { email, name, role },
-      select: { id: true, name: true },
-    });
+  async upsert({ id, email, name, role }: UpsertUserPayload): Promise<UserRef> {
+    await this.repo.upsert({ id, email, name, role, updatedAt: new Date() }, [
+      'id',
+    ]);
+
+    return { id, name };
   }
 
   async getAssignable(id: string): Promise<UserRef> {
-    const user = await this.prisma.user.findUnique({
-      where: { id },
-      select: { id: true, name: true, role: true },
+    const user = await this.repo.findOneBy({
+      id,
     });
     if (!user) throw new NotFoundException(`User ${id} not found`);
     const canBeAssigned = getPermissionsForRole(user.role).includes(
       permissions.leadBeAssigned,
     );
     if (!canBeAssigned) {
-      throw new BadRequestException("User cannot be assigned to a lead");
+      throw new BadRequestException('User cannot be assigned to a lead');
     }
     return { id: user.id, name: user.name };
   }
 
   async findByIds(ids: string[]): Promise<UserRef[]> {
     if (ids.length === 0) return [];
-    return this.prisma.user.findMany({
-      where: { id: { in: [...new Set(ids)] } },
-      select: { id: true, name: true },
+    return this.repo.find({
+      where: {
+        id: In([...new Set(ids)]),
+      },
+      select: {
+        id: true,
+        name: true,
+      },
     });
   }
 
   findByPermission(permission: Permission): Promise<{ id: string }[]> {
-    return this.prisma.user.findMany({
-      where: { role: { in: getRolesWithPermission(permission) } },
-      select: { id: true },
+    return this.repo.find({
+      where: {
+        role: In(getRolesWithPermission(permission)),
+      },
+      select: {
+        id: true,
+      },
     });
   }
-
   listAll(): Promise<UserRef[]> {
-    return this.prisma.user.findMany({
-      select: { id: true, name: true },
-      orderBy: { name: "asc" },
+    return this.repo.find({
+      select: {
+        id: true,
+        name: true,
+      },
+      order: {
+        name: 'ASC',
+      },
     });
   }
 
   private async requireUser(userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.repo.findOneBy({ id: userId });
     if (!user) throw new NotFoundException();
     return user;
   }
@@ -133,20 +148,20 @@ export class UsersService {
             nextChangeAt: unlockAt.toISOString(),
           });
         }
-        const taken = await this.prisma.user.findUnique({
-          where: { email: normalizedEmail },
+        const taken = await this.repo.findOneBy({
+          email: normalizedEmail,
         });
         if (taken) {
-          throw new ConflictException("Email already exist");
+          throw new ConflictException('Email already exist');
         }
         data.email = normalizedEmail;
         data.emailChangedAt = new Date();
       }
     }
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data,
-    });
+    const updated = await this.repo.save(
+      this.repo.merge(user, data, { updatedAt: new Date() }),
+    );
+
     return this.toPublic(updated);
   }
 }

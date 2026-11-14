@@ -2,16 +2,17 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
-} from "@nestjs/common";
+} from '@nestjs/common';
 import type {
   TeamInvitePayload,
   TeamMember,
   TeamUpdatePayload,
-} from "@crm/shared";
-import type { TeamMember as TeamMemberRow } from "../../generated/client";
-import { PrismaService } from "../prisma/prisma.service";
-
-const toTeamMember = (row: TeamMemberRow): TeamMember => ({
+} from '@crm/shared';
+import { InjectRepository } from '@nestjs/typeorm';
+import { TeamMember as TeamMemberEntity } from './team-member.entity';
+import { Repository } from 'typeorm';
+import { randomUUID } from 'node:crypto';
+const toTeamMember = (row: TeamMemberEntity): TeamMember => ({
   id: row.id,
   name: row.name,
   email: row.email,
@@ -25,45 +26,50 @@ const toTeamMember = (row: TeamMemberRow): TeamMember => ({
 
 @Injectable()
 export class TeamService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    @InjectRepository(TeamMemberEntity)
+    private readonly repo: Repository<TeamMemberEntity>,
+  ) {}
 
   async findAll(): Promise<TeamMember[]> {
-    const rows = await this.prisma.teamMember.findMany({
-      orderBy: { createdAt: "asc" },
+    const rows = await this.repo.find({
+      order: { createdAt: 'ASC' },
     });
     return rows.map(toTeamMember);
   }
 
   async invite(payload: TeamInvitePayload): Promise<TeamMember> {
-    const existing = await this.prisma.teamMember.findUnique({
-      where: { email: payload.email },
+    const existing = await this.repo.findOneBy({
+      email: payload.email,
     });
     if (existing) {
-      throw new ConflictException("Email already exists");
+      throw new ConflictException('Email already exists');
     }
 
-    const row = await this.prisma.teamMember.create({
-      data: {
+    const row = await this.repo.save(
+      this.repo.create({
+        id: randomUUID(),
         email: payload.email,
         role: payload.role,
-        name: "",
-        status: "invited",
+        name: '',
+        status: 'invited',
         invitedAt: new Date(),
-      },
-    });
+        updatedAt: new Date(),
+      }),
+    );
     return toTeamMember(row);
   }
 
   async update({ id, ...data }: TeamUpdatePayload): Promise<TeamMember> {
-    const member = await this.prisma.teamMember.findUnique({ where: { id } });
+    const member = await this.repo.findOneBy({ id });
     if (!member) {
-      throw new NotFoundException("Member not found");
+      throw new NotFoundException('Member not found');
     }
 
-    const row = await this.prisma.teamMember.update({
-      where: { id },
-      data,
-    });
+    const row = await this.repo.save(
+      this.repo.merge(member, data, { updatedAt: new Date() }),
+    );
+
     return toTeamMember(row);
   }
 }
